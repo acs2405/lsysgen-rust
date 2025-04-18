@@ -1,0 +1,632 @@
+// Gramática de LSysDParser
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use lalrpop_util::ParseError;
+
+use lexer::{Token, NormalToken, GrammarToken};
+use ast::normal::*;
+use ast::grammar::*;
+
+// Because `mode` has to be `Copy`, we have to pass a reference to the
+// `Rc<RefCell<LexerMode>>`.
+grammar<'input, 'mode>(mode: &'mode Rc<RefCell<LexerMode>>);
+
+
+
+// Public non-terminals:
+
+pub LsdModule = {
+  Module, //EOF
+  LSysImplicitDef //EOF
+};
+
+pub LsdWord = {
+  Nl* <Word> Nl*, //EOF
+};
+
+pub LsdRules = {
+  Nl* <ruleDefs> Nl*, //EOF
+};
+
+pub LsdExpr = {
+  Nl* <Expr> Nl*, //EOF
+};
+
+
+
+// Modules and module statements:
+
+ModStmtNeedsSep = {
+  Import => ModStmt::Import(<>),
+  VarDecl => ModStmt::VarDecl(<>)
+};
+ModStmtEndsInBlock = {
+  LSysExplicitDef => ModStmt::LSysDef(<>),
+  FnDef => ModStmt::FnDef(<>)
+};
+ModPrevStmt = {
+  <ModStmtNeedsSep> Sep,
+  <ModStmtEndsInBlock> Sep?
+};
+ModStmt = {
+  ModStmtNeedsSep,
+  ModStmtEndsInBlock
+};
+ModStmts = {
+  Sep? <ss:ModPrevStmt*> <s:ModStmt> Sep? => {ss.push(s); ss}
+};
+Module = {
+  /*imports*/ ModStmts
+};
+
+
+
+// L System definitions and L System statements:
+
+LSysStmtNeedsSep = {
+  StmtNeedsSep => LSysStmt::Stmt(<>),
+  AxiomDef => LSysStmt::AxiomDef(<>)
+  // ruleDef // Incompatible with two lexer modes
+};
+LSysStmtEndsInBlock = {
+  StmtEndsInBlock => LSysStmt::Stmt(<>),
+  TableBlock => LSysStmt::Stmt(<>),
+  RulesBlock => LSysStmt::Stmt(<>)
+  // productionRulesBlock,
+  // codingRulesBlock,
+};
+LSysPrevStmt = {
+  <LSysStmtNeedsSep> Sep,
+  <LSysStmtEndsInBlock> Sep?
+};
+LSysStmt = {
+  LSysStmtNeedsSep,
+  LSysStmtEndsInBlock
+};
+LSysStmts = {
+  Sep? <ss:LSysPrevStmt*> <s:LSysStmt> Sep? => {ss.push(s); ss}
+};
+LSysExplicitDef = {
+  <Main?> Lsys <n:Id> Nl? LBrace <ss:LsysStmts> RBrace
+};
+LSysImplicitDef = {
+  LSysStmts
+};
+
+
+
+// Code statements:
+
+StmtNeedsSep = {
+  Expr => Stmt::Expr(<>),
+  <a:Assignment> => Stmt::Assign(a.0, a.1),
+  VarDecl => Stmt::VarDecl(<>),
+  FnDef => Stmt::FnDef(<>),
+  LSysExplicitDef => Stmt::LSysDef(<>),
+  Return <Expr?> => Stmt::Return(<>)
+  // If Nl? LParen Nl? Expr Nl? RParen Nl? StmtNeedsSep,
+  // If Nl? LParen Nl? Expr Nl? RParen Nl? Stmt Nl? Else Nl? StmtNeedsSep,
+  // While Nl? LParen Nl? Expr Nl? RParen Nl? StmtNeedsSep,
+  // Do Nl? Stmt Nl? KWWHILE Nl? LParen Nl? Expr Nl? RParen
+};
+StmtEndsInBlock = {
+  StmtBlock => Stmt::Block(<>),
+  // If Nl? <Expr> Nl? <StmtBlock>,
+  If Nl? <Expr> Nl? <StmtBlock> <Nl? Else Nl? <StmtBlock>> => Stmt::If(<>),
+  For Nl? <Id> Nl? In Nl? <Expr> Nl? <StmtBlock> => Stmt::For(<>),
+  While Nl? <Expr> Nl? <StmtBlock> => Stmt::While(<>)
+};
+PrevStmt = {
+  <StmtNeedsSep> Sep,
+  <StmtEndsInBlock> Sep?
+};
+Stmt = {
+  StmtNeedsSep,
+  StmtEndsInBlock
+};
+Stmts = {
+  Sep? <ss:PrevStmt*> <s:Stmt> Sep? => {ss.push(s); ss}
+};
+StmtBlock = {
+  LBrace <Stmts?> RBrace => <>.or(Vec![])
+};
+
+
+
+// Statements staff:
+
+// Decl = {
+//   varDeclaration,
+//   constDeclaration
+// };
+
+// constDeclaration = {
+//   KWSET Id ASSIGN Expr
+// };
+
+VarDecl = {
+  Let Mut? <Id> (Assign <Expr>)?
+};
+
+Assignment = {
+  <Id> ASSIGN <Expr>
+};
+
+AxiomDef = {
+  Axiom <Word>
+};
+
+// propDef = {
+//   KWSET Id ASSIGN Expr
+// };
+
+FnDef = {
+  Fn <id:Id> LParen <p:Params> RParen <b:StmtBlock> => FnDef{name:id, params: p, stmts: b}
+};
+
+// constDef = {
+//   DOLLARId ASSIGN Expr
+// };
+
+
+
+// Expressions:
+
+Expr = {
+  #[precedence(level="0")]
+  LParen <Expr> RParen => <>,
+  Constant => <>,
+  ListDef => Expr::ListDef(<>),
+  // tupledef => <>,
+  // mapdef => <>,
+  // setdef => <>,
+  Id => <>,
+  <Expr> <Accessor> => Expr::PropAcc(<>),
+  <Expr> LParen <Args> RParen => Expr::FnCall(<>),
+  <Expr> LBracket <Index> RBracket => Expr::IndexExpr(<>),
+  // <Id> Assign <Expr> => Expr::Assign(<>),
+
+  Add <Expr> => Expr::Plus(<>),
+  Sub <Expr> => Expr::Minus(<>),
+
+  Not <Expr> => Expr::Not(<>),
+  BitNot <Expr> => Expr::BitNot(<>),
+
+  #[precedence(level="10")] #[assoc(side="right")]
+  <Expr> op=POW <Expr> => Expr::Pow(<>),
+
+  #[precedence(level="11")] #[assoc(side="left")]
+  <Expr> Mul <Expr> => Expr::Mul(<>),
+  <Expr> Div <Expr> => Expr::Div(<>),
+  <Expr> Mod <Expr> => Expr::Mod(<>),
+
+  #[precedence(level="12")] #[assoc(side="left")]
+  <Expr> Add <Expr> => Expr::Add(<>),
+  <Expr> Sub <Expr> => Expr::Sub(<>),
+
+  #[precedence(level="13")] #[assoc(side="left")]
+  <Expr> LT <Expr> => Expr::LT(<>),
+  <Expr> LE <Expr> => Expr::LE(<>),
+  <Expr> GT <Expr> => Expr::GT(<>),
+  <Expr> GE <Expr> => Expr::GE(<>),
+
+  #[precedence(level="14")] #[assoc(side="left")]
+  <Expr> EQ <Expr> => Expr::EQ(<>),
+  <Expr> NE <Expr> => Expr::NE(<>),
+
+  #[precedence(level="15")] #[assoc(side="left")]
+  <Expr> BitAnd <Expr> => Expr::BitAnd(<>),
+
+  #[precedence(level="16")] #[assoc(side="left")]
+  <Expr> BitXor <Expr> => Expr::BitXor(<>),
+
+  #[precedence(level="17")] #[assoc(side="left")]
+  <Expr> BitOr <Expr> => Expr::BitOr(<>),
+
+  #[precedence(level="18")] #[assoc(side="left")]
+  <Expr> And <Expr> => Expr::And(<>),
+
+  #[precedence(level="19")] #[assoc(side="left")]
+  <Expr> Or <Expr> => Expr::Or(<>),
+
+  #[precedence(level="20")] #[assoc(side="right")]
+  If <Expr> Then <Expr> Else <Expr> => Expr::IfElse(<>),
+
+  #[precedence(level="21")] #[assoc(side="left")]
+  <e1:Expr> <n:Not?> In <e2:Expr> => Expr::In(e1, e2, n.is_none()),
+
+  #[precedence(level="22")] #[assoc(side="left")]
+  <l:Lambda> => Expr::Lambda(l.0, l.1)
+};
+
+// indexes
+//   : (index (COMMA index)* COMMA?)?
+//   ;
+
+Index = {
+  Expr
+  // Expr? Colon Expr? (Colon Expr?)?
+};
+
+// formalParameters
+//   : (formalParameter (COMMA formalParameter)*)?
+//   ;
+
+// formalParameter
+//   : Id (ASSIGN Expr)?
+//   ;
+
+// iteratordef
+//   : (Expr KWFOR)? source (KWIF Expr)? (COMMA source (KWIF Expr)?)*
+//   ;
+
+ListDef = {
+  // LBracket iteratordef RBracket,
+  LBracket <es:(<Expr> Comma)*> <e:Expr> Comma? RBracket => {es.push(e); es},
+  LBracket RBracket => vec![]
+};
+
+// tupledef
+//   : LPAREN Expr (COMMA | (COMMA Expr)+ COMMA?) RPAREN
+//   ;
+
+// setdef
+//   : LBRACE iteratordef RBRACE
+//   | LBRACE (Expr (COMMA Expr)*)? COMMA? RBRACE
+//   ;
+
+// mapdef
+//   : LBRACE mapiteratordef RBRACE
+//   | LBRACE (mapitem (COMMA mapitem)*)? COMMA? RBRACE
+//   ;
+
+// mapiteratordef
+//   : mapitem KWFOR source (KWIF Expr)? (COMMA source (KWIF Expr)?)*
+//   ;
+
+// mapitem
+//   : Expr COLON Expr
+//   ;
+
+// source
+//   : Id KWIN Expr
+//   ;
+
+Lambda = {
+  LParen <ps:Params> RParen Arrow <e:Expr>
+};
+
+Params: Vec<&'input [u8]> = {
+  // <params:Params> Comma <param:Param> => {params.push(param); params},
+  // <Param> => [<>],
+  (<ps:(<Param> Comma)*> <p:Param>)? => {ps.push(p); ps}
+};
+
+Param: &'input [u8] = {
+  Id
+  // Id Assign Expr
+};
+
+Args: Vec<Expr<'input>> = {
+  // <args:Args> Comma <arg:Arg> => {args.push(arg); args},
+  // <Arg> Comma? => [<>]
+  (<args:(<Arg> Comma)*> <arg:Arg> Comma?)? => {args.push(arg); args}
+};
+
+Arg: Expr<'input> = {
+  Expr
+  // Id ASSIGN Expr // Como en Python
+};
+
+
+
+// Literals:
+
+IntConstant = {
+  Int => i64::from_str(<>.to_bytes()).map_err(|_| ParseError::User { error: "Integer number is too big" })
+}
+
+FloatConstant = {
+  Float => f64::from_str(<>.to_bytes()).map_err(|_| ParseError::User { error: "Invalid float number" }),
+  Inf => f64::INFINITY,
+  NaN => f64::NAN
+}
+
+Constant = {
+  IntConstant => Expr::Int(<>),
+  FloatConstant => Expr::Float(<>),
+  String => Expr::String(<>.to_bytes()),
+  True => Expr::Bool(true),
+  False => Expr::Bool(false),
+  Null => Expr::Null
+};
+
+
+
+// Grammar mode:
+
+tableBlock = {
+  Table <Id> LBrace <RuleDefs> RBrace
+};
+
+rulesBlock = {
+  Rules Nl? LBrace <RuleDefs> RBrace,
+  Production Nl? Rules Nl? LBrace <RuleDefs> RBrace,
+  Coding Nl? Rules Nl? LBrace <RuleDefs> RBrace
+};
+
+productionRulesBlock = {
+  Production Nl? Rules Nl? LBrace <RuleDefs> RBrace
+};
+
+codingRulesBlock = {
+  Coding Nl? Rules Nl? LBrace <RuleDefs> RBrace
+};
+
+// Rules = {
+//   Sep? (Rule Sep)* Rule? Sep?
+// };
+
+RuleDefs = {
+  Sep? <rs:(<RuleDef> Sep)*> <r:RuleDef?> Sep? => {rs.push(r); rs}
+};
+
+// productionRuleDefs = {
+//   Sep? (productionRuleDef Sep)* productionRuleDef? Sep?
+// };
+
+// codingRuleDefs = {
+//   Sep? (codingRuleDef Sep)* codingRuleDef? Sep?
+// };
+
+// Rule = {
+//   productionRule,
+//   codingRule
+// };
+
+// productionRule = {
+//   productionRuleDef // | tag
+// };
+
+// codingRule = {
+//   codingRuleDef
+// };
+
+RuleDef = {
+  ProductionRuleDef,
+  CodingRuleDef
+};
+
+ProductionRuleDef = {
+  <w:Weight?> <lctx:LeftCtx?> <l:LeftLeaf> <rctx:RightCtx?> <c:cond?> Arrow nl? <r:Word> =>
+    Rule::Production(RuleBase {
+      weight: w.or(1),
+      leftLeaf: l,
+      condition: c,
+      lCtx: lctx.or(vec![]),
+      rCtx: rctx.or(vec![]),
+      rightSide: r
+    })
+};
+
+CodingRuleDef = {
+  <w:Weight?> <lctx:LeftCtx?> <l:LeftLeaf> <rctx:RightCtx?> <c:Cond?> DArrow nl? <r:Word> =>
+    Rule::Coding(RuleBase {
+      weight: w.or(1),
+      leftLeaf: l,
+      condition: c,
+      lCtx: lctx.or(vec![]),
+      rCtx: rctx.or(vec![]),
+      rightSide: r
+    })
+};
+
+// tagPrefix = {
+//   tag COLON
+// };
+
+// tag = {
+//   Id
+// };
+
+Weight = {
+  <WeightValue> BitOr
+};
+
+WeightValue: f64 = {
+  <i:IntConstant> => f64::from(i),
+  <f:FloatConstant> => if f.is_nan() {ParseError::User { error: "Invalid weight" }} else {f}
+  // XM => Float::INFINITY
+};
+
+Cond = {
+  Colon <Expr>
+};
+
+// LeftSide = {
+//   LeftLeaf
+// };
+
+CtxWord = {
+  CtxNode*
+};
+
+LeftCtx = {
+  <CtxWord> LT
+};
+
+RightCtx = {
+  GT <CtxWord>
+};
+
+// RightSide = {
+//   Node*
+// };
+
+Word = {
+  Node*
+};
+
+LeftLeaf = {
+  <s:GmSymbol> <a:(LParen <Params> RParen)?> => LeftLeaf{symbol: s.to_bytes()[0], args: a}
+};
+
+CtxNode = {
+  LeftLeaf => CtxNode::Leaf(<>),
+  LBracket <CtxNode*> RBracket => CtxNode::Branch(<>)
+
+Node = {
+  <s:GmSymbol> <a:(LParen <Args> RParen)?> => Node::Leaf(Leaf{symbol: s, args: a}),
+  LBracket <Node*> RBracket => Node::Branch(<>),
+  <t:GmAtId> <a:(LParen <Args> RParen)?> => Node::Expansion(Expansion{to: t, args: a}),
+  <b:Block> => Node::Block(b)
+};
+
+// ValidLeftChar = {
+//   ValidChar
+// };
+//
+// ValidRightChar = {
+//   ValidChar
+// };
+//
+// ValidChar = {
+//   (Id|INT|ADD|SUB|RULECHAR)
+// };
+
+
+
+// Other:
+
+Sep: () = {
+  Sep SemiColon,
+  Sep NewLine,
+  SemiColon,
+  NewLine
+};
+
+Nl: () = {
+  NewLine+
+};
+
+extern {
+  // Normal mode tokens:
+
+  // Identifiers
+  Id => Token::new(TokenType::Id, _),
+  AtId => Token::new(TokenType::AtId, _),
+  Accessor => Token::new(TokenType::Accessor, _),
+
+  // Literal values
+  Int => Token::new(TokenType::Int, _),
+  Float => Token::new(TokenType::Float, _),
+  String => Token::new(TokenType::String, _),
+  Null => Token::new(TokenType::Null, _),
+  True => Token::new(TokenType::True, _),
+  False => Token::new(TokenType::False, _),
+
+  // Operators
+  Assign => Token::new(TokenType::Assign, _),
+
+  // Arithmetic Operators
+  Add => Token::new(TokenType::Add, _),
+  Sub => Token::new(TokenType::Sub, _),
+  Mul => Token::new(TokenType::Mul, _),
+  Div => Token::new(TokenType::Div, _),
+  Mod => Token::new(TokenType::Mod, _),
+  Pow => Token::new(TokenType::Pow, _),
+
+  // Comparison operators
+  EQ => Token::new(TokenType::EQ, _),
+  NE => Token::new(TokenType::NE, _),
+  LT => Token::new(TokenType::LT, _),
+  LE => Token::new(TokenType::LE, _),
+  GT => Token::new(TokenType::GT, _),
+  GE => Token::new(TokenType::GE, _),
+
+  // Logic operators
+  And => Token::new(TokenType::And, _),
+  Or => Token::new(TokenType::Or, _),
+  Not => Token::new(TokenType::Not, _),
+
+  // Logic operators
+  BitAnd => Token::new(TokenType::BitAnd, _),
+  BitOr => Token::new(TokenType::BitOr, _),
+  BitXor => Token::new(TokenType::BitXor, _),
+  BitNot => Token::new(TokenType::BitNot, _),
+
+  // Various brackets
+  LParen => Token::new(TokenType::LParen, _),
+  RParen => Token::new(TokenType::RParen, _),
+  LBracket => Token::new(TokenType::LBracket, _),
+  RBracket => Token::new(TokenType::RBracket, _),
+  LBrace => Token::new(TokenType::LBrace, _),
+  RBrace => Token::new(TokenType::RBrace, _),
+
+  // Various symbols
+  Dot => Token::new(TokenType::Dot, _),
+  Comma => Token::new(TokenType::Comma, _),
+  // Colon => Token::new(TokenType::Colon, _),
+  QM => Token::new(TokenType::QM, _),
+  XM => Token::new(TokenType::XM, _),
+  At => Token::new(TokenType::At, _),
+  Arrow => Token::new(TokenType::Arrow, _),
+  DArrow => Token::new(TokenType::DArrow, _),
+
+  // Separators
+  SemiColon => Token::new(TokenType::SemiColon, _),
+  NewLine => Token::new(TokenType::NewLine, _),
+
+  // Keywords
+  // And => Token::new(TokenType::And, _),
+  Axiom => Token::new(TokenType::Axiom, _),
+  Coding => Token::new(TokenType::Coding, _),
+  // Do => Token::new(TokenType::Do, _),
+  Else => Token::new(TokenType::Else, _),
+  For => Token::new(TokenType::For, _),
+  // From => Token::new(TokenType::From, _),
+  Fn => Token::new(TokenType::Fn, _),
+  If => Token::new(TokenType::If, _),
+  // Import => Token::new(TokenType::Import, _),
+  In => Token::new(TokenType::In, _),
+  Inf => Token::new(TokenType::Inf, _),
+  Let => Token::new(TokenType::Let, _),
+  Lsys => Token::new(TokenType::Lsys, _),
+  Main => Token::new(TokenType::Main, _),
+  // Mut => Token::new(TokenType::Mut, _),
+  NaN => Token::new(TokenType::NaN, _),
+  // Not => Token::new(TokenType::Not, _),
+  Null => Token::new(TokenType::Null, _),
+  // Or => Token::new(TokenType::Or, _),
+  Production => Token::new(TokenType::Production, _),
+  Return => Token::new(TokenType::Return, _),
+  Rules => Token::new(TokenType::Rules, _),
+  Set => Token::new(TokenType::Set), _,
+  Table => Token::new(TokenType::Table, _),
+  // Then => Token::new(TokenType::Then, _),
+  While => Token::new(TokenType::While, _),
+
+  Other => Token::new(TokenType::Other, _),
+
+  // Grammar mode tokens:
+
+  GmSymbol => Token::new(TokenType::Symbol, _),
+  // GmAtId => Token::new(TokenType::AtId, _),
+  // GmArrow => Token::new(TokenType::Grammar(GrammarToken::Arrow), _),
+  // GmDArrow => Token::new(TokenType::Grammar(GrammarToken::DArrow), _),
+  // GmColon => Token::new(TokenType::Grammar(GrammarToken::Colon), _),
+  // GmPipe => Token::new(TokenType::Grammar(GrammarToken::Pipe), _),
+  // GmLAngle => Token::new(TokenType::Grammar(GrammarToken::LAngle), _),
+  // GmRAngle => Token::new(TokenType::Grammar(GrammarToken::RAngle), _),
+  // GmLParen => Token::new(TokenType::Grammar(GrammarToken::LParen), _),
+  // GmRParen => Token::new(TokenType::Grammar(GrammarToken::RParen), _),
+  // GmLBranch => Token::new(TokenType::Grammar(GrammarToken::LBranch), _),
+  // GmRBranch => Token::new(TokenType::Grammar(GrammarToken::RBranch), _),
+  // GmLBlock => Token::new(TokenType::Grammar(GrammarToken::LBlock), _),
+  // GmRBlock => Token::new(TokenType::Grammar(GrammarToken::RBlock), _),
+
+  // GmOther => Token::new(TokenType::Grammar(GrammarToken::Other), _),
+}
+

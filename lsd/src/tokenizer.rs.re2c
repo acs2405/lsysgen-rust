@@ -1,0 +1,74 @@
+// re2rust tokenizer.rs.re2c -o tokenizer.rs --utf8 //--no-unsafe --api record
+
+pub use lexer::{TokenType, LexerMode};
+
+pub struct YYRecord<'a> {
+  yyinput: &'a [u8],
+  yycursor: usize,
+  // yymarker,
+  // yyctxmarker,
+  // yylimit,
+}
+
+fn set_preconfigurations() {
+  /*!re2c
+      re2c:api     = "record";
+      re2c:unsafe  = 0;
+      re2c:YYCTYPE = "u8";
+
+      identifier = [a-zA-Z_] [a-zA-Z_0-9]*;
+   */
+}
+
+fn ignore_spaces_comments(yyrecord: &mut YYRecord) {
+  /*!re2c
+      [ \t]+ {}
+      "//" .* {}
+      "/*" (![^*]|[*][^/])* "*/" {}
+      * {return}
+   */
+}
+fn select_normal_mode_specific_tokens(yyrecord: &mut YYRecord) -> Option<TokenType> {
+  /*!re2c
+      identifier {return Some(TokenType::Id)}
+      [0-9] [0-9]* {return Some(TokenType::Int)}
+      [0-9]* [.] [0-9]+ {return Some(TokenType::Float)}
+      NaN {return Some(TokenType::NaN)}
+      Inf {return Some(TokenType::Inf)}
+      * {return None}
+   */
+}
+fn select_grammar_mode_specific_tokens(yyrecord: &mut YYRecord) -> Option<TokenType> {
+  /*!re2c
+      [a-zA-Z_0-9+-:=/&%·] {return Some(TokenType::Symbol)}
+      * {return None}
+   */
+}
+fn select_common_tokens(yyinput: &[u8]) -> (Option<TokenType>, usize) {
+  let mut yycursor = 0;
+
+  /*!re2c
+      [.] identifier {return TokenType::Accessor}
+      [\n\r] {return TokenType::NewLine}
+      * {return TokenType::Error}
+   */
+}
+
+pub fn select_tokens(input: &[u8], mode: LexerMode) -> (TokenType, usize) {
+  set_preconfigurations();
+
+  let mut yyrecord = YYRecord{yyinput: input, yycursor: 0};
+
+  ignore_spaces_comments(&mut yyrecord);
+
+  let tt: TokenType = match mode {
+    LexerMode::Normal => {
+      select_normal_mode_specific_tokens(&mut yyrecord)
+    },
+    LexerMode::Grammar => {
+      select_grammar_mode_specific_tokens(&mut yyrecord)
+    }
+  }.or(select_common_tokens(&mut yyrecord));
+
+  (tt, yyrecord.yycursor)
+}
